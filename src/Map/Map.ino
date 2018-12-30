@@ -13,12 +13,18 @@
 //    so, I think that we have to use vectors and think about distance rather than time
 // ----- yes, I think that is essentially correct, store a "current intended direction is blah blah", and
 //       perhaps a "current adjusted direction to avoid obstacle at so and so is goo goo"
+// ===== Thomas believes this is mostly comnpleted, other than:
+//              --correcting left and right(don't know which is which)
+//              --correcting coeficiants that convert time to distance (might be testing or using distance sensor)
+//              --using corners to correct angle and location
 //
 //What is the syntax for a byte array?
 // A: byte mapArray[32][32]; - https://forum.arduino.cc/index.php?topic=220385.0
 // ----- there does seem to be some complexities about this sometimes and there is no range checking,
 //       perhaps we should look for helpful libraries?
 //
+
+//we will need
 
 
 #include "MeMCore.h"
@@ -27,9 +33,9 @@
 #include <math.h>
 
 //objects used
-MeUltrasonicSensor ultraSensor(3);
-MeDCMotor motor_9(9);
-MeDCMotor motor_10(10);
+MeUltrasonicSensor ultraSensor(3); //Object used from MeMCore
+MeDCMotor motor_9(9); //Objects used from MeMCore
+MeDCMotor motor_10(10); 
 
 //motor fields
 int mode;
@@ -39,11 +45,12 @@ int speed;
 //timing fields
 int last_checked = 0;
 int delayCheck = 100;
+double time_to_distance = 0.001; //for each milisecond forward at 100 speed what is the distance
+double time_to_angle = 0.001; //for each milisecond turing at 100 speed what is the sngle change
 
-//maunuvering fields
-int dist;
-int count = 0;
-int ran;
+//navigation fields
+double current_x, current_y, intended_x, intended_y;
+double current_angle, intended_angle;  //in radians
 int obstacle = 0;
 
 //from MeMCore example set
@@ -69,8 +76,7 @@ void move(int direction, int speed) {
 }
 
 int now(){
-    return millis(); //not sure what numbers this returns
-                     // A: the number of milliseconds since program start
+    return millis(); //the number of milliseconds since program start
 }
 
 void stop(){
@@ -118,47 +124,84 @@ void setup(){
 
 //left to right distance scanning
 //Goal: store values in a array of distances to find obstacles
-int lookAround(){
-    int foo [5];
+int[] lookAround(){
+    int scan [5];
     move(3,40);
     delay(50);
-    foo[0] = distance();
+    scan[0] = distance();
     for(int i = 0; i<4; i++){
         move(4,40);
-        foo[i+1] = distance();
+        scan[i+1] = distance();
     }
     move(3,40);
     delay(50);
-
-    //gets minumum
-    int min = 400; //it is set equal to maximum distance
-    for(int i = 0; i<5; i++){
-        if(foo[i]<min){
-            min = foo[i];
-        }
-    }
-    return min;
+    return scan;
 }
 
 void loop(){
-    if ((now() - last_checked) > delayCheck){
+
+    //adjust position
+    //doing this every time will allow us to see a constant pregression of position
+    int time_elapsed = now() - last_checked;
+    if(mode == 1){
+        current_x += time_to_distance * time_elapsed * cos(current_angle);
+        current_y += time_to_distance * time_elapsed * sin(current_angle);
+    } else if(mode == 2){
+        current_x -= time_to_distance * time_elapsed * cos(current_angle);
+        current_y -= time_to_distance * time_elapsed * sin(current_angle);
+    } else if(mode == 3){  //left??
+        current_angle -= time_to_angle * time_elapsed;
+    } else if(mode == 4){ //right??
+        current_angle += time_to_angle * time_elapsed;
+    } //mode = 0 not moving
+
+    if (time_elapsed > delayCheck){
+        //if current(x,y) == intended(x,y)
+        //update intended(x/y) by some algoriethm
         last_checked = now();
-        dist = lookAround();
-        if (dist<10){  // detected obstacle
+
+        //scan
+        int scan [5] = lookAround();
+
+        // get minimum distance from scan
+        int minDist = 400; //it is set equal to maximum distance
+        for(int i = 0; i<5; i++){
+            if(scan[i]<minDist){
+                minDist = scan[i];
+            }
+        }
+
+        if (minDist<10){  // detected obstacle
+
+            //printing to serial
             Serial.print("OBSTACLE - distance: ");
             Serial.print(dist);
             Serial.print(", count: ");
             Serial.println(count);
 
+            //eventually put obstacle in map
             obstacle = 1;
-            if (count == 0){
-                ran = rand() % 2 + 1;
+
+            //manuver around obstacle with preference for going twords intended(x,y)
+            //decide which directing to turn based on obstacle thats further away in that direction
+            if((scan[0]+scan[1])<(scan[3]+scan[4])){ //left?
+                left();
+            } else { //right?
+                right();
             }
-            pickADirection();
-            count++;
-        } else { //no obstacle
+
+        } else { //no obstacle - navagate twords intended (x,y)
+            obstacle = 0;
+
+            intended_angle = atan2(intended_y-current_y, intended_x-current_x); //gets the angle
+            if((current_angle-intended_angle)>.2){ //.2 is about 10 degrees  -- left??
+                left();
+            } else if((current_angle-intended_angle)<-.2){ // right??
+                right();
+            } else {
+                forward();
+            }
             count = 0;
-            forward();
         }
     }   //possibly "else" with delay such that it doesn't use too much processing
         // or do math with the array map
@@ -166,18 +209,5 @@ void loop(){
         //       a queue of processing tasks with time estimates for completion to
         //       give us reasonably efficient use of the downtime whilst also
         //       maintaining responsiveness in the rest of the loop, but we should
-        //       probably not jump straight to that level of insanity
-}
-
-//picks a direction based off of "ran" (random) variable
-// ----- there is something a little odd going on here with the way ran is used inside and outside
-//       the proc, we should be able to clean this up some
-void pickADirection(){
-    if (ran == 1){
-        Serial.println("PICKED LEFT");
-        left();
-    } else { // 2
-        Serial.println("PICKED RIGHT");
-        right();
-    }
+        //       probably not jump straight to that level of insanity <--KB guesses this is JS talking
 }
